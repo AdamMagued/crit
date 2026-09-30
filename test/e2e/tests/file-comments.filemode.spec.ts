@@ -51,7 +51,8 @@ test.describe('File-level comments — File Mode', () => {
               expect(Math.abs(source!.width - documentWidth)).toBeLessThan(2);
               expect(Math.abs(source!.x + source!.width / 2 - file!.x - file!.width / 2)).toBeLessThan(2);
               const selectedWidth = { compact: 840, default: 1040, wide: 1280 }[choice]!;
-              expect(Math.abs(source!.width - Math.min(selectedWidth, file!.width - 32))).toBeLessThan(2);
+              // The file's 1px border on each side is outside the source's box.
+              expect(Math.abs(source!.width - Math.min(selectedWidth, file!.width - 2 - 32))).toBeLessThan(2);
             }
           }).toPass();
           if (viewport === 390 && choice === 'wide') {
@@ -67,6 +68,46 @@ test.describe('File-level comments — File Mode', () => {
         expect(pane!.x + pane!.width).toBeLessThanOrEqual(viewport);
       }
     }
+  });
+
+  test('code comments keep the document width when code wraps', async ({ page, request }) => {
+    for (const path of ['plan.md', 'server.go']) {
+      for (const scope of ['file', 'line']) {
+        const response = await request.post(`/api/file/comments?path=${path}`, {
+          data: { scope, start_line: scope === 'file' ? 0 : 1, end_line: scope === 'file' ? 0 : 1, body: `${path} ${scope} wrap` },
+        });
+        expect(response.ok()).toBeTruthy();
+      }
+    }
+    await loadPage(page);
+    await page.setViewportSize({ width: 1400, height: 1000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.locator('#codeOverflowSelect').selectOption('wrap');
+    await page.keyboard.press('Escape');
+    const boxesFor = async (path: string) => {
+      const item = await revealFile(page, path);
+      return item.locator('.comment-card').evaluateAll(cards => cards.map(card => {
+        const r = card.getBoundingClientRect();
+        return { width: r.width, x: r.x };
+      }));
+    };
+    let doc: { width: number; x: number }[] = [];
+    await expect(async () => {
+      doc = await boxesFor('plan.md');
+      expect(doc).toHaveLength(2);
+    }).toPass();
+    const item = await revealFile(page, 'server.go');
+    await expect(item.locator('pre[data-overflow="wrap"]').first()).toBeVisible();
+    // Wrap mode clears Pierre's column variables; cards must still span the
+    // line numbers, like the rendered document's cards.
+    await expect(async () => {
+      const code = await boxesFor('server.go');
+      expect(code).toHaveLength(2);
+      for (const [i, box] of code.entries()) {
+        expect(Math.abs(box.width - doc[i].width)).toBeLessThan(2);
+        expect(Math.abs(box.x - doc[i].x)).toBeLessThan(2);
+      }
+    }).toPass();
   });
 
   // Rendered markdown: the card must land above the document, not below it
