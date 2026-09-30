@@ -357,6 +357,118 @@ func TestAcquireSessionLock_FlockBased(t *testing.T) {
 	}
 }
 
+func TestAcquireSessionLock_ReopensAFileDeletedWhileWaiting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot delete a lock file that another process has open")
+	}
+	testutil.SetHome(t, t.TempDir())
+	key := "locktest123456"
+	first, err := acquireSessionLock(key)
+	if err != nil {
+		t.Fatalf("acquireSessionLock: %v", err)
+	}
+
+	got := make(chan *os.File, 1)
+	go func() {
+		f, err := acquireSessionLock(key)
+		if err != nil {
+			t.Errorf("waiting acquireSessionLock: %v", err)
+		}
+		got <- f
+	}()
+	time.Sleep(150 * time.Millisecond) // let the waiter open the file that is about to go
+	releaseSessionLock(first)
+
+	select {
+	case f := <-got:
+		if f == nil {
+			return
+		}
+		defer releaseSessionLock(f)
+		if !isFileAt(f, f.Name()) {
+			t.Error("the waiter holds the deleted lock file instead of the one at the path")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the waiter never got the lock")
+	}
+}
+
+func TestCleanOrphanedSessions_KeepsAHeldSessionLock(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	key := "deadsession123"
+	if err := WriteSessionFile(key, SessionEntry{PID: 999999, Port: 1}); err != nil {
+		t.Fatalf("WriteSessionFile: %v", err)
+	}
+	lock, err := acquireSessionLock(key)
+	if err != nil {
+		t.Fatalf("acquireSessionLock: %v", err)
+	}
+	t.Cleanup(func() { releaseSessionLock(lock) })
+
+	cleanOrphanedSessions()
+
+	if !isFileAt(lock, lock.Name()) {
+		t.Error("the dead session's cleanup deleted a session lock that a starting client holds")
+	}
+}
+
+func TestRemoveSessionFile_KeepsAHeldSessionLock(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	key := "startsession123"
+	lock, err := acquireSessionLock(key)
+	if err != nil {
+		t.Fatalf("acquireSessionLock: %v", err)
+	}
+	t.Cleanup(func() { releaseSessionLock(lock) })
+
+	// StartDaemonInDir calls RemoveSessionFile while holding this lock.
+	RemoveSessionFile(key)
+	if !isFileAt(lock, lock.Name()) {
+		t.Fatal("startup removed its own held session lock")
+	}
+}
+
+func TestRemoveOpenedLockIfFree_KeepsReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot delete a lock file that another process has open")
+	}
+	testutil.SetHome(t, t.TempDir())
+	key := "replacedlock123"
+	first, err := acquireSessionLock(key)
+	if err != nil {
+		t.Fatalf("acquireSessionLock: %v", err)
+	}
+	oldFile, err := os.OpenFile(first.Name(), os.O_WRONLY, 0)
+	if err != nil {
+		releaseSessionLock(first)
+		t.Fatalf("open old lock: %v", err)
+	}
+	releaseSessionLock(first)
+	replacement, err := acquireSessionLock(key)
+	if err != nil {
+		oldFile.Close()
+		t.Fatalf("acquire replacement lock: %v", err)
+	}
+	t.Cleanup(func() { releaseSessionLock(replacement) })
+
+	removeOpenedLockIfFree(oldFile, replacement.Name())
+	if !isFileAt(replacement, replacement.Name()) {
+		t.Fatal("orphan cleanup removed a replacement session lock")
+	}
+}
+
+func TestIsFileAt_ClosedLock(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	lock, err := acquireSessionLock("closedlock123")
+	if err != nil {
+		t.Fatalf("acquireSessionLock: %v", err)
+	}
+	releaseSessionLock(lock)
+	if isFileAt(lock, lock.Name()) {
+		t.Fatal("closed lock file cannot still protect its path")
+	}
+}
+
 func TestIsDaemonAlive_NoPID(t *testing.T) {
 	if isDaemonAlive(SessionEntry{PID: 0, Port: 9999}) {
 		t.Error("PID 0 should not be alive")
