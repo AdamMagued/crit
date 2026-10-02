@@ -1747,6 +1747,9 @@
       return out;
     }
     const lineKeys = renderedDiffLineKeys(pierrePreparedHunks(file));
+    // File-level threads and the outdated notice sit together, on the old
+    // side (left of a split diff) unless the file has none.
+    const fileSide = A.fileLevelSide(file.status);
     let outdated = false;
     for (let i = 0; i < (file.comments || []).length; i++) {
       const c = file.comments[i];
@@ -1755,14 +1758,14 @@
         outdated = true;
         continue;
       }
-      out.push(A.annotationForComment(c));
+      out.push(A.annotationForComment(c, fileSide));
     }
     if (outdated) {
-      out.push({ side: 'additions', lineNumber: 0, metadata: { kind: 'outdated', id: file.path } });
+      out.push({ side: fileSide, lineNumber: 0, metadata: { kind: 'outdated', id: file.path } });
     }
     const forms = getFormsForFile(file.path);
     for (let i = 0; i < forms.length; i++) {
-      if (!forms[i].editingId) out.push(A.annotationForForm(forms[i]));
+      if (!forms[i].editingId) out.push(A.annotationForForm(forms[i], fileSide));
     }
     return out;
   }
