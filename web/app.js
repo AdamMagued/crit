@@ -2196,6 +2196,29 @@
     })();
   }
 
+  // Pierre can resolve scrollToFile as soon as a virtualized target is
+  // mounted, while its smooth scroll is still moving the list. A document
+  // comment's inner alignment must wait for that outer scroll to settle or
+  // the pending file scroll can pull the comment back offscreen.
+  function whenListScrollSettled(root, done) {
+    const startedAt = performance.now();
+    let previous = root.scrollTop;
+    let lastMovementAt = startedAt;
+    (function poll() {
+      const now = performance.now();
+      const current = root.scrollTop;
+      if (current !== previous) lastMovementAt = now;
+      previous = current;
+      // Wait out the deferred start of a smooth scroll too. A few quiet
+      // animation frames can occur before the browser begins moving it.
+      if ((now - startedAt >= 250 && now - lastMovementAt >= 120) || now - startedAt >= 4000) {
+        done();
+        return;
+      }
+      requestAnimationFrame(poll);
+    })();
+  }
+
   // Scroll inside Pierre's list without asking the browser to find every
   // ancestor scroll container. The comments panel and other fixed chrome can
   // otherwise make native scrollIntoView move the document instead of the
@@ -2209,7 +2232,9 @@
       const elRect = el.getBoundingClientRect();
       const offset = elRect.top - rootRect.top - (root.clientHeight - elRect.height) / 2;
       if (Math.abs(offset) < 2 || frames++ >= 12) return;
-      root.scrollTop += offset;
+      // Make each layout correction immediate instead of starting overlapping
+      // browser scroll animations during the bounded alignment loop.
+      root.scrollTo({ top: root.scrollTop + offset, behavior: 'instant' });
       requestAnimationFrame(align);
     })();
   }
@@ -2236,8 +2261,13 @@
         : pierreView.scrollToFile(filePath);
       scrolled.then(function() {
         whenMounted(card, function(el) {
-          if (inDocument) scrollPierreElementIntoView(el);
-          done(el);
+          if (!inDocument) { done(el); return; }
+          whenListScrollSettled(document.getElementById('filesContainer'), function() {
+            whenMounted(card, function(mountedCard) {
+              scrollPierreElementIntoView(mountedCard);
+              done(mountedCard);
+            });
+          });
         });
       });
     });
