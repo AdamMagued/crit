@@ -5,7 +5,6 @@ package session
 import (
 	"errors"
 	"os"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -72,13 +71,12 @@ func isWindowsTransientIOErr(err error) bool {
 	if os.IsNotExist(err) {
 		return true
 	}
+	// windows.Errno is an alias of syscall.Errno, so this matches both
+	// golang.org/x/sys/windows values and the syscall.Errno values that
+	// os.PathError and os.LinkError carry.
 	var winErrno windows.Errno
 	if errors.As(err, &winErrno) {
 		return isTransientWinErrno(winErrno)
-	}
-	var sysErrno syscall.Errno
-	if errors.As(err, &sysErrno) {
-		return isTransientWinErrno(windows.Errno(sysErrno))
 	}
 	return false
 }
